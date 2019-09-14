@@ -1514,12 +1514,18 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
         // actually come into scope; suppressing the lifetime annotations
         // completely in this case is unnecessarily pessimistic, but again, this
         // is rare.
+        uint64_t size = CGM.getDataLayout().getTypeAllocSize(allocaTy);
         if (!Bypasses.IsBypassed(&D) &&
             !(!getLangOpts().CPlusPlus && hasLabelBeenSeenInCurrentScope())) {
-          uint64_t size = CGM.getDataLayout().getTypeAllocSize(allocaTy);
           emission.SizeForLifetimeMarkers =
               EmitLifetimeStart(size, AllocaAddr.getPointer());
         }
+        // Freeze its initial bytes.
+        llvm::Function *Fn = CGM.getLLVMFreezeMemFn();
+        llvm::Value *SizeV = llvm::ConstantInt::get(Int64Ty, size);
+        llvm::Value *Addr = Builder.CreateBitCast(AllocaAddr.getPointer(), AllocaInt8PtrTy);
+        llvm::Value *TrueVal = llvm::ConstantInt::getTrue(getLLVMContext());
+        Builder.CreateCall(Fn, {Addr, SizeV, TrueVal});
       } else {
         assert(!emission.useLifetimeMarkers());
       }
@@ -2325,6 +2331,16 @@ llvm::Function *CodeGenModule::getLLVMLifetimeEndFn() {
   LifetimeEndFn = llvm::Intrinsic::getDeclaration(&getModule(),
     llvm::Intrinsic::lifetime_end, AllocaInt8PtrTy);
   return LifetimeEndFn;
+}
+
+/// Lazily declare the @llvm.freeze.mem intrinsics.
+llvm::Function *CodeGenModule::getLLVMFreezeMemFn() {
+  if (FreezeMemFn)
+    return FreezeMemFn;
+  llvm::Type *Int64Ty = llvm::IntegerType::get(getLLVMContext(), 64);
+  FreezeMemFn = llvm::Intrinsic::getDeclaration(&getModule(),
+    llvm::Intrinsic::freeze_mem, {AllocaInt8PtrTy, Int64Ty});
+  return FreezeMemFn;
 }
 
 namespace {
